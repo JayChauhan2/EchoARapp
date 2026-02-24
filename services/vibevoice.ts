@@ -5,7 +5,7 @@ const cacheDir = (FileSystem as any).cacheDirectory || (FileSystem as any).docum
 const writeAsync = (FileSystem as any).writeAsStringAsync;
 const EncType = (FileSystem as any).EncodingType;
 
-const BASE_URL = 'ws://127.0.0.1:3000/stream';
+const BASE_URL = 'ws://192.168.0.153:3000/stream';
 const SAMPLE_RATE = 24000;
 
 /**
