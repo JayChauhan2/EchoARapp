@@ -9,7 +9,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 
 // Services
-import { getGroqResponse, transcribeAudio } from '@/services/groq';
+import { streamGroqResponse, transcribeAudio } from '@/services/groq';
 import { synthesizeSpeech } from '@/services/vibevoice';
 
 export default function HomeScreen() {
@@ -20,6 +20,11 @@ export default function HomeScreen() {
   const [lastResponse, setLastResponse] = useState('');
   const [sound, setSound] = useState<Audio.Sound | null>(null);
 
+  // Queue and streaming state
+  const audioQueue = React.useRef<string[]>([]);
+  const isPlayingQueue = React.useRef(false);
+  const isStreamingComplete = React.useRef(false);
+
   useEffect(() => {
     return () => {
       if (sound) {
@@ -27,6 +32,47 @@ export default function HomeScreen() {
       }
     };
   }, [sound]);
+
+  async function processAudioQueue() {
+    if (isPlayingQueue.current) return;
+    isPlayingQueue.current = true;
+
+    while (audioQueue.current.length > 0 || !isStreamingComplete.current) {
+      if (audioQueue.current.length > 0) {
+        const audioUri = audioQueue.current.shift();
+        if (audioUri) {
+          try {
+            console.log('[Queue] Playing:', audioUri);
+            const { sound: newSound } = await Audio.Sound.createAsync(
+              { uri: audioUri },
+              { shouldPlay: true, volume: 1.0 }
+            );
+            setSound(newSound);
+
+            // Wait for it to finish playing
+            await new Promise((resolve) => {
+              newSound.setOnPlaybackStatusUpdate((status) => {
+                if (status.isLoaded && status.didJustFinish) {
+                  resolve(null);
+                }
+              });
+            });
+
+            await newSound.unloadAsync();
+          } catch (err) {
+            console.error('Error playing queued audio:', err);
+          }
+        }
+      } else {
+        // Buffer empty but stream not done, wait a bit
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+
+    isPlayingQueue.current = false;
+    setStatus('Done');
+    console.log('[Queue] Finished');
+  }
 
   async function startRecording() {
     try {
@@ -54,6 +100,9 @@ export default function HomeScreen() {
     setRecording(null);
     setStatus('Processing...');
     setIsProcessing(true);
+    setLastResponse('');
+    audioQueue.current = [];
+    isStreamingComplete.current = false;
 
     try {
       await recording.stopAndUnloadAsync();
@@ -70,17 +119,10 @@ export default function HomeScreen() {
       const transcript = await transcribeAudio(uri, groqApiKey);
       console.log('Transcript:', transcript);
 
-      // 2. Get AI Response (Groq LLM)
+      // 2. Start Processing Pipeline
       setStatus('Thinking...');
-      const responseText = await getGroqResponse(transcript, groqApiKey);
-      setLastResponse(responseText);
 
-      // 3. Synthesize (VibeVoice)
-      setStatus('Speaking...');
-      const audioUri = await synthesizeSpeech(responseText);
-
-      // 4. Playback
-      setStatus('Playing...');
+      // Reset audio mode for playback
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
         playsInSilentModeIOS: true,
@@ -88,16 +130,46 @@ export default function HomeScreen() {
         playThroughEarpieceAndroid: false,
       });
 
-      const { sound: newSound } = await Audio.Sound.createAsync(
-        { uri: audioUri },
-        { shouldPlay: true, volume: 1.0 }
-      );
-      setSound(newSound);
+      // Start the queue processor in the background
+      processAudioQueue();
 
-      setStatus('Done');
+      let currentSentence = '';
+      let fullText = '';
+
+      await streamGroqResponse(transcript, groqApiKey, async (token) => {
+        fullText += token;
+        currentSentence += token;
+        setLastResponse(fullText);
+
+        // Simple sentence detection (. ! ? \n)
+        if (/[.!?\n]/.test(token) && currentSentence.trim().length > 10) {
+          const sentenceToSynthesize = currentSentence.trim();
+          currentSentence = '';
+
+          console.log('[Pipeline] Synthesizing sentence:', sentenceToSynthesize);
+          // Don't await, let it synthesize in background and add to queue
+          synthesizeSpeech(sentenceToSynthesize).then(audioUri => {
+            audioQueue.current.push(audioUri);
+            console.log('[Pipeline] Added to queue:', audioUri);
+          }).catch(err => {
+            console.error('Synthesis error for sentence:', err);
+          });
+        }
+      });
+
+      // Handle any remaining text
+      if (currentSentence.trim().length > 0) {
+        const audioUri = await synthesizeSpeech(currentSentence.trim());
+        audioQueue.current.push(audioUri);
+      }
+
+      isStreamingComplete.current = true;
+      // The processAudioQueue will finish and set status to 'Done'
+
     } catch (err) {
       console.error('Processing error', err);
       setStatus('Error');
+      setIsProcessing(false);
     } finally {
       setIsProcessing(false);
     }
