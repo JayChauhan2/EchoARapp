@@ -1,6 +1,6 @@
 import { Buffer } from 'buffer';
 import * as Crypto from 'expo-crypto';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
 const cacheDir = (FileSystem as any).cacheDirectory || FileSystem.documentDirectory;
 const writeAsync = (FileSystem as any).writeAsStringAsync;

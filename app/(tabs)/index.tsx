@@ -80,9 +80,19 @@ export default function HomeScreen() {
       const audioUri = await synthesizeSpeech(responseText);
 
       // 4. Playback
-      const { sound: newSound } = await Audio.Sound.createAsync({ uri: audioUri });
+      setStatus('Playing...');
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      });
+
+      const { sound: newSound } = await Audio.Sound.createAsync(
+        { uri: audioUri },
+        { shouldPlay: true, volume: 1.0 }
+      );
       setSound(newSound);
-      await newSound.playAsync();
 
       setStatus('Done');
     } catch (err) {
