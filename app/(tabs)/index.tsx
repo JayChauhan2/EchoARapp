@@ -24,6 +24,7 @@ export default function HomeScreen() {
   const audioQueue = React.useRef<string[]>([]);
   const isPlayingQueue = React.useRef(false);
   const isStreamingComplete = React.useRef(false);
+  const pendingSynthesisCount = React.useRef(0);
 
   useEffect(() => {
     return () => {
@@ -36,8 +37,9 @@ export default function HomeScreen() {
   async function processAudioQueue() {
     if (isPlayingQueue.current) return;
     isPlayingQueue.current = true;
+    console.log('[Queue] Started');
 
-    while (audioQueue.current.length > 0 || !isStreamingComplete.current) {
+    while (audioQueue.current.length > 0 || !isStreamingComplete.current || pendingSynthesisCount.current > 0) {
       if (audioQueue.current.length > 0) {
         const audioUri = audioQueue.current.shift();
         if (audioUri) {
@@ -103,6 +105,7 @@ export default function HomeScreen() {
     setLastResponse('');
     audioQueue.current = [];
     isStreamingComplete.current = false;
+    pendingSynthesisCount.current = 0;
 
     try {
       await recording.stopAndUnloadAsync();
@@ -137,6 +140,7 @@ export default function HomeScreen() {
       let fullText = '';
 
       await streamGroqResponse(transcript, groqApiKey, async (token) => {
+        console.log('[Groq] Token:', token);
         fullText += token;
         currentSentence += token;
         setLastResponse(fullText);
@@ -148,19 +152,30 @@ export default function HomeScreen() {
 
           console.log('[Pipeline] Synthesizing sentence:', sentenceToSynthesize);
           // Don't await, let it synthesize in background and add to queue
+          pendingSynthesisCount.current++;
           synthesizeSpeech(sentenceToSynthesize).then(audioUri => {
             audioQueue.current.push(audioUri);
-            console.log('[Pipeline] Added to queue:', audioUri);
+            pendingSynthesisCount.current--;
+            console.log('[Pipeline] Added to queue:', audioUri, 'Pending:', pendingSynthesisCount.current);
           }).catch(err => {
             console.error('Synthesis error for sentence:', err);
+            pendingSynthesisCount.current--;
           });
         }
       });
 
       // Handle any remaining text
       if (currentSentence.trim().length > 0) {
-        const audioUri = await synthesizeSpeech(currentSentence.trim());
-        audioQueue.current.push(audioUri);
+        const sentenceToSynthesize = currentSentence.trim();
+        console.log('[Pipeline] Handle remaining:', sentenceToSynthesize);
+        pendingSynthesisCount.current++;
+        synthesizeSpeech(sentenceToSynthesize).then(audioUri => {
+          audioQueue.current.push(audioUri);
+          pendingSynthesisCount.current--;
+        }).catch(err => {
+          console.error('Final synthesis error:', err);
+          pendingSynthesisCount.current--;
+        });
       }
 
       isStreamingComplete.current = true;

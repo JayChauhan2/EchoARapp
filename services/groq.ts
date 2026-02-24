@@ -59,13 +59,13 @@ export const streamGroqResponse = async (
   apiKey: string,
   onToken: (token: string) => void
 ) => {
-  const response = await fetch(`${GROQ_API_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
+  return new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${GROQ_API_URL}/chat/completions`);
+    xhr.setRequestHeader('Authorization', `Bearer ${apiKey}`);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+
+    const body = JSON.stringify({
       model: 'llama-3.3-70b-versatile',
       messages: [
         {
@@ -78,40 +78,42 @@ export const streamGroqResponse = async (
         },
       ],
       stream: true,
-    }),
-  });
+    });
 
-  if (!response.ok) {
-    throw new Error(`Groq API error: ${response.statusText}`);
-  }
+    let lastIndex = 0;
 
-  const reader = response.body?.getReader();
-  const decoder = new TextDecoder();
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState === 3 || xhr.readyState === 4) {
+        const newData = xhr.responseText.substring(lastIndex);
+        lastIndex = xhr.responseText.length;
 
-  if (!reader) return;
+        const lines = newData.split('\n');
+        for (const line of lines) {
+          const message = line.replace(/^data: /, '').trim();
+          if (message === '' || message === '[DONE]') continue;
 
-  let buffer = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-
-    for (const line of lines) {
-      const message = line.replace(/^data: /, '').trim();
-      if (message === '' || message === '[DONE]') continue;
-
-      try {
-        const parsed = JSON.parse(message);
-        const content = parsed.choices[0]?.delta?.content;
-        if (content) {
-          onToken(content);
+          try {
+            const parsed = JSON.parse(message);
+            const content = parsed.choices[0]?.delta?.content;
+            if (content) {
+              onToken(content);
+            }
+          } catch (e) {
+            // Incomplete JSON is expected in readyState 3
+          }
         }
-      } catch (e) {
-        console.error('Error parsing Groq SSE message', e);
       }
-    }
-  }
+
+      if (xhr.readyState === 4) {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+        } else {
+          reject(new Error(`Groq API error: ${xhr.status} ${xhr.statusText}`));
+        }
+      }
+    };
+
+    xhr.onerror = () => reject(new Error('Network error during Groq streaming'));
+    xhr.send(body);
+  });
 };

@@ -80,9 +80,9 @@ function normalizePCM16(buffer: Buffer, targetPeak: number = 0.9): Buffer {
  */
 export const synthesizeSpeech = async (
     text: string,
-    voice: string = 'en-Emma_woman',
+    voice: string = 'en-Grace_woman',
     cfg: number = 1.5,
-    steps: number = 5
+    steps: number = 4
 ): Promise<string> => {
     const requestId = getRandomHex(16);
     // VibeVoice expects parameters in query string for /stream
