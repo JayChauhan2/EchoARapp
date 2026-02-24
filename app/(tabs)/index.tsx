@@ -1,13 +1,98 @@
+import { Audio } from 'expo-av';
 import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, StyleSheet, TextInput, TouchableOpacity } from 'react-native';
 
 import { HelloWave } from '@/components/hello-wave';
 import ParallaxScrollView from '@/components/parallax-scroll-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+
+// Services
+import { synthesizeSpeech } from '@/services/edge-tts';
+import { getGroqResponse, transcribeAudio } from '@/services/groq';
 
 export default function HomeScreen() {
+  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [groqApiKey, setGroqApiKey] = useState('');
+  const [status, setStatus] = useState('Ready');
+  const [lastResponse, setLastResponse] = useState('');
+  const [sound, setSound] = useState<Audio.Sound | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (sound) {
+        sound.unloadAsync();
+      }
+    };
+  }, [sound]);
+
+  async function startRecording() {
+    try {
+      const permission = await Audio.requestPermissionsAsync();
+      if (permission.status !== 'granted') return;
+
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
+
+      const { recording } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+      setRecording(recording);
+      setStatus('Listening...');
+    } catch (err) {
+      console.error('Failed to start recording', err);
+    }
+  }
+
+  async function stopRecording() {
+    if (!recording) return;
+
+    setRecording(null);
+    setStatus('Processing...');
+    setIsProcessing(true);
+
+    try {
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+
+      if (!uri || !groqApiKey) {
+        setStatus('Error: Missing URI or API Key');
+        setIsProcessing(false);
+        return;
+      }
+
+      // 1. Transcribe (Groq Whisper)
+      setStatus('Transcribing...');
+      const transcript = await transcribeAudio(uri, groqApiKey);
+      console.log('Transcript:', transcript);
+
+      // 2. Get AI Response (Groq LLM)
+      setStatus('Thinking...');
+      const responseText = await getGroqResponse(transcript, groqApiKey);
+      setLastResponse(responseText);
+
+      // 3. Synthesize (Edge TTS)
+      setStatus('Speaking...');
+      const audioUri = await synthesizeSpeech(responseText);
+
+      // 4. Playback
+      const { sound: newSound } = await Audio.Sound.createAsync({ uri: audioUri });
+      setSound(newSound);
+      await newSound.playAsync();
+
+      setStatus('Done');
+    } catch (err) {
+      console.error('Processing error', err);
+      setStatus('Error');
+    } finally {
+      setIsProcessing(false);
+    }
+  }
+
   return (
     <ParallaxScrollView
       headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
@@ -18,61 +103,50 @@ export default function HomeScreen() {
         />
       }>
       <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
+        <ThemedText type="title">Echo AI Assistant</ThemedText>
         <HelloWave />
       </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
       <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
+        <ThemedText type="subtitle">Configuration</ThemedText>
+        <TextInput
+          style={styles.input}
+          placeholder="Enter Groq API Key"
+          placeholderTextColor="#888"
+          value={groqApiKey}
+          onChangeText={setGroqApiKey}
+          secureTextEntry
+        />
+      </ThemedView>
+
+      <ThemedView style={[styles.stepContainer, styles.voiceContainer]}>
+        <ThemedText type="subtitle">Voice Mode</ThemedText>
+        <ThemedText style={styles.statusText}>{status}</ThemedText>
+
+        <TouchableOpacity
+          style={[
+            styles.voiceButton,
+            recording ? styles.recordingButton : {},
+            isProcessing ? styles.disabledButton : {}
+          ]}
+          onPress={recording ? stopRecording : startRecording}
+          disabled={isProcessing}
+        >
+          {isProcessing ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <ThemedText style={styles.buttonText}>
+              {recording ? 'Stop & Send' : 'Press to Talk'}
+            </ThemedText>
+          )}
+        </TouchableOpacity>
+
+        {lastResponse ? (
+          <ThemedView style={styles.responseBox}>
+            <ThemedText type="defaultSemiBold">AI Response:</ThemedText>
+            <ThemedText>{lastResponse}</ThemedText>
+          </ThemedView>
+        ) : null}
       </ThemedView>
     </ParallaxScrollView>
   );
@@ -87,6 +161,13 @@ const styles = StyleSheet.create({
   stepContainer: {
     gap: 8,
     marginBottom: 8,
+    padding: 16,
+  },
+  voiceContainer: {
+    alignItems: 'center',
+    backgroundColor: '#f0f0f0',
+    borderRadius: 12,
+    marginTop: 10,
   },
   reactLogo: {
     height: 178,
@@ -95,4 +176,44 @@ const styles = StyleSheet.create({
     left: 0,
     position: 'absolute',
   },
+  input: {
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 8,
+    padding: 12,
+    color: '#000',
+    backgroundColor: '#fff',
+  },
+  voiceButton: {
+    width: 200,
+    height: 60,
+    backgroundColor: '#007AFF',
+    borderRadius: 30,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  recordingButton: {
+    backgroundColor: '#FF3B30',
+  },
+  disabledButton: {
+    backgroundColor: '#ccc',
+  },
+  buttonText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  statusText: {
+    fontSize: 16,
+    color: '#555',
+  },
+  responseBox: {
+    marginTop: 20,
+    padding: 12,
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    width: '100%',
+  },
 });
+
