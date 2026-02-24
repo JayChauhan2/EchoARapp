@@ -9,8 +9,8 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 
 // Services
-import { synthesizeSpeech } from '@/services/edge-tts';
 import { getGroqResponse, transcribeAudio } from '@/services/groq';
+import { synthesizeSpeech } from '@/services/vibevoice';
 
 export default function HomeScreen() {
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
@@ -75,7 +75,7 @@ export default function HomeScreen() {
       const responseText = await getGroqResponse(transcript, groqApiKey);
       setLastResponse(responseText);
 
-      // 3. Synthesize (Edge TTS)
+      // 3. Synthesize (VibeVoice)
       setStatus('Speaking...');
       const audioUri = await synthesizeSpeech(responseText);
 
