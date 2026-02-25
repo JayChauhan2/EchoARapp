@@ -1,7 +1,14 @@
+import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import { Image } from 'expo-image';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, TextInput, TouchableOpacity } from 'react-native';
+import { ActivityIndicator, Dimensions, StyleSheet, TextInput, View } from 'react-native';
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring
+} from 'react-native-reanimated';
 
 import { HelloWave } from '@/components/hello-wave';
 import ParallaxScrollView from '@/components/parallax-scroll-view';
@@ -12,19 +19,26 @@ import { ThemedView } from '@/components/themed-view';
 import { streamGroqResponse, transcribeAudio } from '@/services/groq';
 import { synthesizeSpeech } from '@/services/vibevoice';
 
+const { width } = Dimensions.get('window');
+
 export default function HomeScreen() {
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [groqApiKey, setGroqApiKey] = useState('');
   const [status, setStatus] = useState('Ready');
   const [lastResponse, setLastResponse] = useState('');
+  const [userTranscript, setUserTranscript] = useState('');
   const [sound, setSound] = useState<Audio.Sound | null>(null);
+  const [isRecordingState, setIsRecordingState] = useState(false);
 
   // Queue and streaming state
   const audioQueue = React.useRef<string[]>([]);
   const isPlayingQueue = React.useRef(false);
   const isStreamingComplete = React.useRef(false);
   const pendingSynthesisCount = React.useRef(0);
+
+  // Animation values
+  const micScale = useSharedValue(1);
 
   useEffect(() => {
     return () => {
@@ -90,7 +104,11 @@ export default function HomeScreen() {
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
       setRecording(recording);
+      setIsRecordingState(true);
       setStatus('Listening...');
+      micScale.value = withSpring(1.5);
+      setUserTranscript('');
+      setLastResponse('');
     } catch (err) {
       console.error('Failed to start recording', err);
     }
@@ -100,9 +118,11 @@ export default function HomeScreen() {
     if (!recording) return;
 
     setRecording(null);
+    setIsRecordingState(false);
     setStatus('Processing...');
     setIsProcessing(true);
-    setLastResponse('');
+    micScale.value = withSpring(1);
+
     audioQueue.current = [];
     isStreamingComplete.current = false;
     pendingSynthesisCount.current = 0;
@@ -121,6 +141,15 @@ export default function HomeScreen() {
       setStatus('Transcribing...');
       const transcript = await transcribeAudio(uri, groqApiKey);
       console.log('Transcript:', transcript);
+
+      // Animate user transcript appearing word by word
+      const words = transcript.split(' ');
+      let currentDisplay = '';
+      for (let i = 0; i < words.length; i++) {
+        currentDisplay += (i === 0 ? '' : ' ') + words[i];
+        setUserTranscript(currentDisplay);
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       // 2. Start Processing Pipeline
       setStatus('Thinking...');
@@ -190,62 +219,101 @@ export default function HomeScreen() {
     }
   }
 
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Echo AI Assistant</ThemedText>
-        <HelloWave />
-      </ThemedView>
+  const longPressGesture = Gesture.Tap()
+    .onBegin(() => {
+      startRecording();
+    })
+    .onFinalize(() => {
+      stopRecording();
+    });
 
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Configuration</ThemedText>
-        <TextInput
-          style={styles.input}
-          placeholder="Enter Groq API Key"
-          placeholderTextColor="#888"
-          value={groqApiKey}
-          onChangeText={setGroqApiKey}
-          secureTextEntry
-        />
-      </ThemedView>
+  const animatedMicStyle = useAnimatedStyle(() => {
+    return {
+      transform: [{ scale: micScale.value }],
+      backgroundColor: isRecordingState ? '#FF3B30' : '#007AFF',
+    };
+  });
 
-      <ThemedView style={[styles.stepContainer, styles.voiceContainer]}>
-        <ThemedText type="subtitle">Voice Mode</ThemedText>
-        <ThemedText style={styles.statusText}>{status}</ThemedText>
-
-        <TouchableOpacity
-          style={[
-            styles.voiceButton,
-            recording ? styles.recordingButton : {},
-            isProcessing ? styles.disabledButton : {}
-          ]}
-          onPress={recording ? stopRecording : startRecording}
-          disabled={isProcessing}
-        >
-          {isProcessing ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <ThemedText style={styles.buttonText}>
-              {recording ? 'Stop & Send' : 'Press to Talk'}
+  const renderFadingText = (text: string, color: string) => {
+    const words = text.split(' ');
+    return (
+      <View style={styles.transcriptContainer}>
+        {words.map((word, index) => {
+          const opacity = Math.max(0.3, 1 - (words.length - 1 - index) * 0.1);
+          return (
+            <ThemedText
+              key={index}
+              style={[styles.animatedWord, { color, opacity }]}
+            >
+              {word}{' '}
             </ThemedText>
-          )}
-        </TouchableOpacity>
+          );
+        })}
+      </View>
+    );
+  };
 
-        {lastResponse ? (
-          <ThemedView style={styles.responseBox}>
-            <ThemedText type="defaultSemiBold">AI Response:</ThemedText>
-            <ThemedText>{lastResponse}</ThemedText>
-          </ThemedView>
-        ) : null}
-      </ThemedView>
-    </ParallaxScrollView>
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ParallaxScrollView
+        headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
+        headerImage={
+          <Image
+            source={require('@/assets/images/partial-react-logo.png')}
+            style={styles.reactLogo}
+          />
+        }>
+        <ThemedView style={styles.titleContainer}>
+          <ThemedText type="title">Echo AI Assistant</ThemedText>
+          <HelloWave />
+        </ThemedView>
+
+        <ThemedView style={styles.stepContainer}>
+          <ThemedText type="subtitle">Configuration</ThemedText>
+          <TextInput
+            style={styles.input}
+            placeholder="Enter Groq API Key"
+            placeholderTextColor="#888"
+            value={groqApiKey}
+            onChangeText={setGroqApiKey}
+            secureTextEntry
+          />
+        </ThemedView>
+
+        <ThemedView style={styles.stepContainer}>
+          <ThemedText type="subtitle">Instructions</ThemedText>
+          <ThemedText>
+            Hold the microphone button at the bottom to speak. Release it to send your message.
+          </ThemedText>
+        </ThemedView>
+
+        {/* Space for the bottom bar and text */}
+        <View style={{ height: 150 }} />
+      </ParallaxScrollView>
+
+      {/* Floating UI Elements */}
+      <View style={styles.floatingContainer} pointerEvents="box-none">
+        <View style={styles.textOverlay}>
+          {userTranscript ? renderFadingText(userTranscript, '#333') : null}
+          {lastResponse ? renderFadingText(lastResponse, '#007AFF') : null}
+        </View>
+
+        <View style={styles.micButtonContainer}>
+          <ThemedText style={styles.statusText}>{status}</ThemedText>
+          {isProcessing ? (
+            <View style={styles.processingCircle}>
+              <ActivityIndicator color="#fff" />
+            </View>
+          ) : (
+            <GestureDetector gesture={longPressGesture}>
+              <Animated.View style={[styles.micButton, animatedMicStyle]}>
+                <Ionicons name="mic" size={32} color="#fff" />
+              </Animated.View>
+            </GestureDetector>
+          )}
+        </View>
+      </View>
+    </GestureHandlerRootView>
   );
 }
 
@@ -259,12 +327,6 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 8,
     padding: 16,
-  },
-  voiceContainer: {
-    alignItems: 'center',
-    backgroundColor: '#f0f0f0',
-    borderRadius: 12,
-    marginTop: 10,
   },
   reactLogo: {
     height: 178,
@@ -281,36 +343,61 @@ const styles = StyleSheet.create({
     color: '#000',
     backgroundColor: '#fff',
   },
-  voiceButton: {
-    width: 200,
-    height: 60,
-    backgroundColor: '#007AFF',
-    borderRadius: 30,
+  floatingContainer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    paddingBottom: 40,
+  },
+  textOverlay: {
+    width: width * 0.9,
+    minHeight: 60,
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 10,
+    marginBottom: 20,
   },
-  recordingButton: {
-    backgroundColor: '#FF3B30',
+  transcriptContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
   },
-  disabledButton: {
-    backgroundColor: '#ccc',
-  },
-  buttonText: {
-    color: '#fff',
+  animatedWord: {
     fontSize: 18,
-    fontWeight: 'bold',
+    lineHeight: 24,
+    fontWeight: '500',
+  },
+  micButtonContainer: {
+    alignItems: 'center',
+  },
+  micButton: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    backgroundColor: '#007AFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 8,
+  },
+  processingCircle: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    backgroundColor: '#ccc',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   statusText: {
-    fontSize: 16,
-    color: '#555',
-  },
-  responseBox: {
-    marginTop: 20,
-    padding: 12,
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    width: '100%',
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 8,
+    fontWeight: '600',
   },
 });
 
