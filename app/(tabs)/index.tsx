@@ -2,8 +2,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import { Image } from 'expo-image';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Dimensions, StyleSheet, TextInput, View } from 'react-native';
-import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { ActivityIndicator, Dimensions, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -23,6 +23,8 @@ const { width } = Dimensions.get('window');
 
 export default function HomeScreen() {
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const recordingRef = React.useRef<Audio.Recording | null>(null);
+  const isRecordingIntent = React.useRef(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [groqApiKey, setGroqApiKey] = useState('');
   const [status, setStatus] = useState('Ready');
@@ -91,6 +93,7 @@ export default function HomeScreen() {
   }
 
   async function startRecording() {
+    isRecordingIntent.current = true;
     try {
       const permission = await Audio.requestPermissionsAsync();
       if (permission.status !== 'granted') return;
@@ -100,10 +103,17 @@ export default function HomeScreen() {
         playsInSilentModeIOS: true,
       });
 
-      const { recording } = await Audio.Recording.createAsync(
+      const { recording: newRecording } = await Audio.Recording.createAsync(
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
-      setRecording(recording);
+
+      if (!isRecordingIntent.current) {
+        await newRecording.stopAndUnloadAsync();
+        return;
+      }
+
+      recordingRef.current = newRecording;
+      setRecording(newRecording);
       setIsRecordingState(true);
       setStatus('Listening...');
       micScale.value = withSpring(1.5);
@@ -115,21 +125,20 @@ export default function HomeScreen() {
   }
 
   async function stopRecording() {
-    if (!recording) return;
+    isRecordingIntent.current = false;
+    const currentRec = recordingRef.current;
+    if (!currentRec) return;
 
+    recordingRef.current = null;
     setRecording(null);
     setIsRecordingState(false);
     setStatus('Processing...');
     setIsProcessing(true);
     micScale.value = withSpring(1);
 
-    audioQueue.current = [];
-    isStreamingComplete.current = false;
-    pendingSynthesisCount.current = 0;
-
     try {
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
+      await currentRec.stopAndUnloadAsync();
+      const uri = currentRec.getURI();
 
       if (!uri || !groqApiKey) {
         setStatus('Error: Missing URI or API Key');
@@ -162,53 +171,35 @@ export default function HomeScreen() {
         playThroughEarpieceAndroid: false,
       });
 
-      // Start the queue processor in the background
-      processAudioQueue();
-
-      let currentSentence = '';
       let fullText = '';
-
       await streamGroqResponse(transcript, groqApiKey, async (token) => {
-        console.log('[Groq] Token:', token);
         fullText += token;
-        currentSentence += token;
         setLastResponse(fullText);
-
-        // Simple sentence detection (. ! ? \n)
-        if (/[.!?\n]/.test(token) && currentSentence.trim().length > 10) {
-          const sentenceToSynthesize = currentSentence.trim();
-          currentSentence = '';
-
-          console.log('[Pipeline] Synthesizing sentence:', sentenceToSynthesize);
-          // Don't await, let it synthesize in background and add to queue
-          pendingSynthesisCount.current++;
-          synthesizeSpeech(sentenceToSynthesize).then(audioUri => {
-            audioQueue.current.push(audioUri);
-            pendingSynthesisCount.current--;
-            console.log('[Pipeline] Added to queue:', audioUri, 'Pending:', pendingSynthesisCount.current);
-          }).catch(err => {
-            console.error('Synthesis error for sentence:', err);
-            pendingSynthesisCount.current--;
-          });
-        }
       });
 
-      // Handle any remaining text
-      if (currentSentence.trim().length > 0) {
-        const sentenceToSynthesize = currentSentence.trim();
-        console.log('[Pipeline] Handle remaining:', sentenceToSynthesize);
-        pendingSynthesisCount.current++;
-        synthesizeSpeech(sentenceToSynthesize).then(audioUri => {
-          audioQueue.current.push(audioUri);
-          pendingSynthesisCount.current--;
-        }).catch(err => {
-          console.error('Final synthesis error:', err);
-          pendingSynthesisCount.current--;
+      console.log('[Pipeline] Finished thinking. Synthesizing full text...');
+      setStatus('Speaking...');
+
+      if (fullText.trim().length > 0) {
+        const audioUri = await synthesizeSpeech(fullText.trim());
+        const { sound: newSound } = await Audio.Sound.createAsync(
+          { uri: audioUri },
+          { shouldPlay: true, volume: 1.0 }
+        );
+        setSound(newSound);
+
+        // Wait for it to finish playing
+        await new Promise((resolve) => {
+          newSound.setOnPlaybackStatusUpdate((status) => {
+            if (status.isLoaded && status.didJustFinish) {
+              resolve(null);
+            }
+          });
         });
+        await newSound.unloadAsync();
       }
 
-      isStreamingComplete.current = true;
-      // The processAudioQueue will finish and set status to 'Done'
+      setStatus('Done');
 
     } catch (err) {
       console.error('Processing error', err);
@@ -218,14 +209,6 @@ export default function HomeScreen() {
       setIsProcessing(false);
     }
   }
-
-  const longPressGesture = Gesture.Tap()
-    .onBegin(() => {
-      startRecording();
-    })
-    .onFinalize(() => {
-      stopRecording();
-    });
 
   const animatedMicStyle = useAnimatedStyle(() => {
     return {
@@ -305,11 +288,11 @@ export default function HomeScreen() {
               <ActivityIndicator color="#fff" />
             </View>
           ) : (
-            <GestureDetector gesture={longPressGesture}>
+            <Pressable onPressIn={startRecording} onPressOut={stopRecording}>
               <Animated.View style={[styles.micButton, animatedMicStyle]}>
                 <Ionicons name="mic" size={32} color="#fff" />
               </Animated.View>
-            </GestureDetector>
+            </Pressable>
           )}
         </View>
       </View>
